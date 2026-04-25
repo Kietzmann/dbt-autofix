@@ -1,0 +1,35 @@
+[
+  {
+    "mode": "complete"
+  },
+  {
+    "file_path": "project_gated_meta_get/models/gated_access.py",
+    "mode": "applied",
+    "refactors": [
+      {
+        "deprecation": "CustomKeyInConfigDeprecation",
+        "log": "Moved custom configs ['access_py_key'] to 'meta'"
+      },
+      {
+        "deprecation": "CustomKeyInConfigDeprecation",
+        "log": "Updated config.get('access_py_key') to config.meta_get('access_py_key')"
+      }
+    ],
+    "warnings": []
+  },
+  {
+    "file_path": "project_gated_meta_get/models/gated_access.sql",
+    "mode": "applied",
+    "refactors": [
+      {
+        "deprecation": "CustomKeyInConfigDeprecation",
+        "log": "Moved custom config ['access_test_key'] to 'meta'"
+      },
+      {
+        "deprecation": "CustomKeyInConfigDeprecation",
+        "log": "Refactored \"config.get(\"access_test_key\")\" to \"config.meta_get(\"access_test_key\")\""
+      }
+    ],
+    "warnings": []
+  }
+]

@@ -11,7 +11,7 @@ def model(dbt, session):
     and applies custom classification logic.
     """
     # Configure the model
-    dbt.config(materialized="table", refresh_frequency="daily")
+    dbt.config(materialized="table", data_classification="daily")
 
     # Get custom classification
     classification = dbt.config.get("data_classification")

@@ -1,3 +1,4 @@
+import ast
 import re
 from copy import deepcopy
 from typing import Any, Dict, List, Optional, Tuple
@@ -8,6 +9,28 @@ from dbt_autofix.refactors.constants import COMMON_CONFIG_MISSPELLINGS
 from dbt_autofix.refactors.results import DbtDeprecationRefactor, SQLContent, SQLRefactorConfig, SQLRuleRefactorResult
 
 CONFIG_MACRO_PATTERN = re.compile(r"(\{\{\s*config\s*\()(.*?)(\)\s*\}\})", re.DOTALL)
+
+
+def _string_keys_in_config_meta_value(meta_val: Any) -> set[str]:
+    """String keys present under a parsed ``meta`` value in ``{{ config(...) }}`` (dict or eval-able str)."""
+    out: set[str] = set()
+    if meta_val is None:
+        return out
+    if isinstance(meta_val, dict):
+        for k in meta_val:
+            if isinstance(k, str):
+                out.add(k)
+        return out
+    if isinstance(meta_val, str):
+        try:
+            parsed = ast.literal_eval(meta_val)
+        except (ValueError, SyntaxError, TypeError):
+            return out
+        if isinstance(parsed, dict):
+            for k in parsed:
+                if isinstance(k, str):
+                    out.add(k)
+    return out
 
 
 def extract_config_macro(sql_content: str) -> Optional[str]:
@@ -268,6 +291,7 @@ def refactor_custom_configs_to_meta_sql(content: SQLContent, config: SQLRefactor
             refactored_content=sql_content,
             original_content=sql_content,
             deprecation_refactors=[],
+            keys_contributed_moved_to_meta=frozenset(),
         )
 
     refactored_sql_configs = deepcopy(original_sql_configs)
@@ -304,8 +328,6 @@ def refactor_custom_configs_to_meta_sql(content: SQLContent, config: SQLRefactor
                 existing_meta = refactored_sql_configs["meta"]
                 if isinstance(existing_meta, str):
                     # It's a source code string like "{'key': 'value'}" - parse it
-                    import ast
-
                     try:
                         parsed_meta = ast.literal_eval(existing_meta)
                         meta_dict = {k: repr(v) if not isinstance(v, str) else f"'{v}'" for k, v in parsed_meta.items()}
@@ -360,6 +382,10 @@ def refactor_custom_configs_to_meta_sql(content: SQLContent, config: SQLRefactor
 
             refactored_content = CONFIG_MACRO_PATTERN.sub(replace_config, sql_content, count=1)
 
+    # Keys already under ``meta`` (e.g. from a prior run) also gate get→meta_get, not only keys moved this run.
+    meta_keys = _string_keys_in_config_meta_value(refactored_sql_configs.get("meta"))
+    keys_for_gating: set[str] = set(moved_to_meta) | meta_keys
+
     return SQLRuleRefactorResult(
         rule_name="move_custom_configs_to_meta_sql",
         refactored=refactored,
@@ -367,6 +393,7 @@ def refactor_custom_configs_to_meta_sql(content: SQLContent, config: SQLRefactor
         original_content=sql_content,
         deprecation_refactors=deprecation_refactors,
         refactor_warnings=refactor_warnings,
+        keys_contributed_moved_to_meta=frozenset(keys_for_gating),
     )
 
 
@@ -472,6 +499,12 @@ def move_custom_config_access_to_meta_sql(content: SQLContent, config: SQLRefact
         default = match.group("default")
 
         if config_key in allowed_config_fields:
+            continue
+
+        if config_key not in content.keys_moved_to_meta:
+            refactor_warnings.append(
+                f"Skipped config.get('{config_key}'): key was not moved to meta in this run; access meta manually if needed."
+            )
             continue
 
         start, end = match.span()

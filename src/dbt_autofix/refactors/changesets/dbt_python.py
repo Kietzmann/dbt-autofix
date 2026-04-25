@@ -184,6 +184,7 @@ def refactor_custom_configs_to_meta_python(
             refactored_content=python_content,
             original_content=python_content,
             deprecation_refactors=[],
+            keys_contributed_moved_to_meta=frozenset(),
         )
 
     allowed_config_fields = schema_specs.yaml_specs_per_node_type[node_type].allowed_config_fields
@@ -191,6 +192,8 @@ def refactor_custom_configs_to_meta_python(
     # Process matches in reverse order to maintain positions
     refactored_content = python_content
     refactored = False
+    keys_moved: set[str] = set()
+    meta_keys_from_calls: set[str] = set()
 
     for match in reversed(matches):
         # Find the matching closing parenthesis
@@ -221,8 +224,20 @@ def refactor_custom_configs_to_meta_python(
             else:
                 custom_configs[key] = value
 
+        if existing_meta:
+            try:
+                meta_parsed = ast.literal_eval(existing_meta)
+            except (ValueError, SyntaxError, TypeError):
+                meta_parsed = None
+            if isinstance(meta_parsed, dict):
+                for k in meta_parsed:
+                    if isinstance(k, str):
+                        meta_keys_from_calls.add(k)
+
         if not custom_configs:
             continue
+
+        keys_moved.update(custom_configs.keys())
 
         # Build the new meta dict
         meta_items: List[str] = []
@@ -274,6 +289,7 @@ def refactor_custom_configs_to_meta_python(
         refactored_content=refactored_content,
         original_content=python_content,
         deprecation_refactors=deprecation_refactors,
+        keys_contributed_moved_to_meta=frozenset(keys_moved | meta_keys_from_calls),
     )
 
 
@@ -281,6 +297,9 @@ def move_custom_config_access_to_meta_python(
     content: PythonContent, config: PythonRefactorConfig
 ) -> PythonRuleRefactorResult:
     """Update dbt.config.get() calls to use meta_get for custom configs.
+
+    Only rewrites `get` for keys in ``content.keys_moved_to_meta`` (keys the same-file
+    ``refactor_custom_configs_to_meta_python`` run moved into ``meta``).
 
     Transforms:
         dbt.config.get("random_config")
@@ -296,6 +315,7 @@ def move_custom_config_access_to_meta_python(
     schema_specs = config.schema_specs
     node_type = config.node_type
     deprecation_refactors: List[DbtDeprecationRefactor] = []
+    refactor_warnings: List[str] = []
 
     allowed_config_fields = schema_specs.yaml_specs_per_node_type[node_type].allowed_config_fields
 
@@ -320,6 +340,13 @@ def move_custom_config_access_to_meta_python(
         if config_key in allowed_config_fields:
             continue
 
+        if config_key not in content.keys_moved_to_meta:
+            refactor_warnings.append(
+                f"Skipped dbt.config.get('{config_key}') to meta_get: key was not moved to meta in this run; "
+                f"use meta_get manually if the value is in meta."
+            )
+            continue
+
         start, end = match.span()
         original = match.group(0)
 
@@ -335,6 +362,7 @@ def move_custom_config_access_to_meta_python(
             refactored_content=python_content,
             original_content=python_content,
             deprecation_refactors=[],
+            refactor_warnings=refactor_warnings,
         )
 
     # Apply replacements in reverse order
@@ -359,4 +387,5 @@ def move_custom_config_access_to_meta_python(
         refactored_content=refactored_content,
         original_content=python_content,
         deprecation_refactors=deprecation_refactors,
+        refactor_warnings=refactor_warnings,
     )

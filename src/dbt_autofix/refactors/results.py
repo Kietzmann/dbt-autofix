@@ -2,7 +2,7 @@ import json
 import os
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Callable, Optional
+from typing import Callable, Optional, Set
 
 from rich.console import Console
 from ruamel.yaml.comments import CommentedMap
@@ -42,6 +42,8 @@ class SQLContent:
     original_str: str
     current_str: str
     current_file_path: Path
+    # Keys that were moved to meta in an earlier step of this same-file pipeline (gating meta_get).
+    keys_moved_to_meta: frozenset[str] = field(default_factory=frozenset)
 
 
 @dataclass
@@ -49,6 +51,7 @@ class PythonContent:
     original_str: str
     current_str: str
     current_file_path: Path
+    keys_moved_to_meta: frozenset[str] = field(default_factory=frozenset)
 
 
 # ---------------------------------------------------------------------------
@@ -116,6 +119,8 @@ class SQLRuleRefactorResult:
     deprecation_refactors: list[DbtDeprecationRefactor]
     refactored_file_path: Optional[Path] = None
     refactor_warnings: list[str] = field(default_factory=list)
+    # Keys (post-rename) that this rule placed or merged under config meta (for gating get→meta_get).
+    keys_contributed_moved_to_meta: frozenset[str] = field(default_factory=frozenset)
 
     @property
     def refactor_logs(self):
@@ -138,6 +143,7 @@ class PythonRuleRefactorResult:
     deprecation_refactors: list[DbtDeprecationRefactor]
     refactored_file_path: Optional[Path] = None
     refactor_warnings: list[str] = field(default_factory=list)
+    keys_contributed_moved_to_meta: frozenset[str] = field(default_factory=frozenset)
 
     @property
     def refactor_logs(self):
@@ -224,6 +230,8 @@ class SQLRefactorResult:
     original_content: str
     refactors: list[SQLRuleRefactorResult]
     has_warnings: bool = False
+    # Accumulated keys moved to meta in prior rules in this file (same run).
+    keys_moved_to_meta: Set[str] = field(default_factory=set)
 
     @property
     def refactored(self) -> bool:
@@ -234,6 +242,7 @@ class SQLRefactorResult:
             original_str=self.original_content,
             current_str=self.refactored_content,
             current_file_path=self.refactored_file_path,
+            keys_moved_to_meta=frozenset(self.keys_moved_to_meta),
         )
         result = func(content, config)
         self.refactors.append(result)
@@ -243,6 +252,8 @@ class SQLRefactorResult:
                 self.refactored_file_path = result.refactored_file_path
         if result.refactor_warnings:
             self.has_warnings = True
+        if result.keys_contributed_moved_to_meta:
+            self.keys_moved_to_meta |= result.keys_contributed_moved_to_meta
 
     def update_sql_file(self) -> None:
         """Update the SQL file with the refactored content"""
@@ -304,6 +315,7 @@ class PythonRefactorResult:
     original_content: str
     refactors: list[PythonRuleRefactorResult]
     has_warnings: bool = False
+    keys_moved_to_meta: Set[str] = field(default_factory=set)
 
     @property
     def refactored(self) -> bool:
@@ -314,6 +326,7 @@ class PythonRefactorResult:
             original_str=self.original_content,
             current_str=self.refactored_content,
             current_file_path=self.refactored_file_path,
+            keys_moved_to_meta=frozenset(self.keys_moved_to_meta),
         )
         result = func(content, config)
         self.refactors.append(result)
@@ -323,6 +336,8 @@ class PythonRefactorResult:
                 self.refactored_file_path = result.refactored_file_path
         if result.refactor_warnings:
             self.has_warnings = True
+        if result.keys_contributed_moved_to_meta:
+            self.keys_moved_to_meta |= result.keys_contributed_moved_to_meta
 
     def update_python_file(self) -> None:
         """Update the Python file with the refactored content"""

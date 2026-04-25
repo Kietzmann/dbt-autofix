@@ -8,7 +8,7 @@
     "refactors": [
       {
         "deprecation": "CustomKeyInConfigDeprecation",
-        "log": "Moved custom configs ['refresh_frequency'] to 'meta'"
+        "log": "Moved custom configs ['data_classification'] to 'meta'"
       },
       {
         "deprecation": "CustomKeyInConfigDeprecation",

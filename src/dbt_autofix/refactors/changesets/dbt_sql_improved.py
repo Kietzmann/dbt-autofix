@@ -35,6 +35,9 @@ def move_custom_config_access_to_meta_sql_improved(
 ) -> SQLRuleRefactorResult:
     """Move custom config access to meta in SQL files using the new meta_get/meta_require methods.
 
+    Only rewrites non-native keys when they appear in ``content.keys_moved_to_meta`` (produced by
+    ``refactor_custom_configs_to_meta_sql`` in the same pipeline for that file).
+
     This improved version:
     - Handles both config.get() and config.require()
     - Properly replaces with config.meta_get() and config.meta_require()
@@ -82,6 +85,13 @@ def move_custom_config_access_to_meta_sql_improved(
 
         # Skip if this is a dbt-native config
         if config_key in allowed_config_fields:
+            continue
+
+        if config_key not in content.keys_moved_to_meta:
+            refactor_warnings.append(
+                f"Skipped config.{method}('{config_key}') to meta_{method}: key was not moved to meta in this run; "
+                f"use meta_{method} manually if the value is in meta."
+            )
             continue
 
         # Build the replacement

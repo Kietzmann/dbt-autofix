@@ -24,8 +24,15 @@ class FakeSchemaSpecs(SchemaSpecs):
         }
 
 
-def _py(py_str: str, path: Path = Path("test_model.py")) -> PythonContent:
-    return PythonContent(original_str=py_str, current_str=py_str, current_file_path=path)
+def _py(
+    py_str: str, path: Path = Path("test_model.py"), *, moved_meta_keys: frozenset[str] | None = None
+) -> PythonContent:
+    return PythonContent(
+        original_str=py_str,
+        current_str=py_str,
+        current_file_path=path,
+        keys_moved_to_meta=moved_meta_keys if moved_meta_keys is not None else frozenset(),
+    )
 
 
 def _py_cfg(schema_specs=None, node_type: str = "models") -> PythonRefactorConfig:
@@ -313,7 +320,9 @@ class TestMoveCustomConfigAccessToMetaPython:
     random_config = dbt.config.meta_get("random_config")
     return session.sql(f"SELECT '{random_config}'")
 """
-        result = move_custom_config_access_to_meta_python(_py(input_python), _py_cfg())
+        result = move_custom_config_access_to_meta_python(
+            _py(input_python, moved_meta_keys=frozenset({"random_config"})), _py_cfg()
+        )
 
         assert result.refactored
         assert result.refactored_content == expected_python
@@ -330,7 +339,9 @@ class TestMoveCustomConfigAccessToMetaPython:
     custom_val = dbt.config.meta_get("custom_key", "default_value")
     return session.sql("SELECT 1")
 """
-        result = move_custom_config_access_to_meta_python(_py(input_python), _py_cfg())
+        result = move_custom_config_access_to_meta_python(
+            _py(input_python, moved_meta_keys=frozenset({"custom_key"})), _py_cfg()
+        )
 
         assert result.refactored
         assert result.refactored_content == expected_python
@@ -347,7 +358,9 @@ class TestMoveCustomConfigAccessToMetaPython:
     val_b = dbt.config.meta_get("custom_b", "default")
     return session.sql(f"SELECT '{val_a}', '{val_b}'")
 """
-        result = move_custom_config_access_to_meta_python(_py(input_python), _py_cfg())
+        result = move_custom_config_access_to_meta_python(
+            _py(input_python, moved_meta_keys=frozenset({"custom_a", "custom_b"})), _py_cfg()
+        )
 
         assert result.refactored
         assert result.refactored_content == expected_python
@@ -389,7 +402,9 @@ class TestMoveCustomConfigAccessToMetaPython:
     custom = dbt.config.meta_get("custom_key")
     return session.sql("SELECT 1")
 """
-        result = move_custom_config_access_to_meta_python(_py(input_python), _py_cfg())
+        result = move_custom_config_access_to_meta_python(
+            _py(input_python, moved_meta_keys=frozenset({"custom_key"})), _py_cfg()
+        )
 
         assert result.refactored
         assert result.refactored_content == expected_python
@@ -411,7 +426,13 @@ class TestMoveCustomConfigAccessToMetaPython:
     val_d = dbt.config.meta_get('with_default_single', 'fallback')
     return session.sql("SELECT 1")
 """
-        result = move_custom_config_access_to_meta_python(_py(input_python), _py_cfg())
+        result = move_custom_config_access_to_meta_python(
+            _py(
+                input_python,
+                moved_meta_keys=frozenset({"double_quoted", "single_quoted", "with_default", "with_default_single"}),
+            ),
+            _py_cfg(),
+        )
 
         assert result.refactored
         assert result.refactored_content == expected_python
@@ -439,11 +460,24 @@ class TestMoveCustomConfigAccessToMetaPython:
     custom_y = dbt.config.meta_get("custom_y", "default")
     return session.sql("SELECT 1")
 """
-        result = move_custom_config_access_to_meta_python(_py(input_python), _py_cfg())
+        result = move_custom_config_access_to_meta_python(
+            _py(input_python, moved_meta_keys=frozenset({"custom_x", "custom_y"})), _py_cfg()
+        )
 
         assert result.refactored
         assert result.refactored_content == expected_python
         assert len(result.deprecation_refactors) == 2
+
+    def test_skipped_when_key_not_moved_in_same_run(self):
+        """Get should stay get if the key was not in keys_moved_to_meta (same run provenance)."""
+        input_python = """def model(dbt, session):
+    v = dbt.config.get("orphan_key")
+    return session.sql("SELECT 1")
+"""
+        result = move_custom_config_access_to_meta_python(_py(input_python), _py_cfg())
+        assert not result.refactored
+        assert "orphan_key" in result.refactored_content
+        assert any("not moved to meta" in w for w in result.refactor_warnings)
 
     def test_none_default(self):
         """config.get() with None default should be preserved."""
@@ -455,7 +489,9 @@ class TestMoveCustomConfigAccessToMetaPython:
     val = dbt.config.meta_get("custom_key", None)
     return session.sql("SELECT 1")
 """
-        result = move_custom_config_access_to_meta_python(_py(input_python), _py_cfg())
+        result = move_custom_config_access_to_meta_python(
+            _py(input_python, moved_meta_keys=frozenset({"custom_key"})), _py_cfg()
+        )
 
         assert result.refactored
         assert result.refactored_content == expected_python
@@ -470,7 +506,9 @@ class TestMoveCustomConfigAccessToMetaPython:
     val = dbt.config.meta_get("custom_key", [])
     return session.sql("SELECT 1")
 """
-        result = move_custom_config_access_to_meta_python(_py(input_python), _py_cfg())
+        result = move_custom_config_access_to_meta_python(
+            _py(input_python, moved_meta_keys=frozenset({"custom_key"})), _py_cfg()
+        )
 
         assert result.refactored
         assert result.refactored_content == expected_python
@@ -485,7 +523,9 @@ class TestMoveCustomConfigAccessToMetaPython:
     val = dbt.config.meta_get("custom_key", {})
     return session.sql("SELECT 1")
 """
-        result = move_custom_config_access_to_meta_python(_py(input_python), _py_cfg())
+        result = move_custom_config_access_to_meta_python(
+            _py(input_python, moved_meta_keys=frozenset({"custom_key"})), _py_cfg()
+        )
 
         assert result.refactored
         assert result.refactored_content == expected_python
@@ -500,7 +540,9 @@ class TestMoveCustomConfigAccessToMetaPython:
     val = dbt.config.meta_get("custom_key", 42)
     return session.sql("SELECT 1")
 """
-        result = move_custom_config_access_to_meta_python(_py(input_python), _py_cfg())
+        result = move_custom_config_access_to_meta_python(
+            _py(input_python, moved_meta_keys=frozenset({"custom_key"})), _py_cfg()
+        )
 
         assert result.refactored
         assert result.refactored_content == expected_python
@@ -515,7 +557,9 @@ class TestMoveCustomConfigAccessToMetaPython:
     val = dbt.config.meta_get("custom_key", True)
     return session.sql("SELECT 1")
 """
-        result = move_custom_config_access_to_meta_python(_py(input_python), _py_cfg())
+        result = move_custom_config_access_to_meta_python(
+            _py(input_python, moved_meta_keys=frozenset({"custom_key"})), _py_cfg()
+        )
 
         assert result.refactored
         assert result.refactored_content == expected_python
@@ -530,7 +574,9 @@ class TestMoveCustomConfigAccessToMetaPython:
     val = dbt.config.meta_get("custom_key", [1, 2, 3])
     return session.sql("SELECT 1")
 """
-        result = move_custom_config_access_to_meta_python(_py(input_python), _py_cfg())
+        result = move_custom_config_access_to_meta_python(
+            _py(input_python, moved_meta_keys=frozenset({"custom_key"})), _py_cfg()
+        )
 
         assert result.refactored
         assert result.refactored_content == expected_python
@@ -548,7 +594,9 @@ class TestMoveCustomConfigAccessToMetaPython:
     val = dbt.config.meta_get("custom_key", fallback_value)
     return session.sql("SELECT 1")
 """
-        result = move_custom_config_access_to_meta_python(_py(input_python), _py_cfg())
+        result = move_custom_config_access_to_meta_python(
+            _py(input_python, moved_meta_keys=frozenset({"custom_key"})), _py_cfg()
+        )
 
         assert result.refactored
         assert result.refactored_content == expected_python
@@ -569,7 +617,9 @@ class TestMoveCustomConfigAccessToMetaPython:
     val = dbt.config.meta_get("custom_key", get_default())
     return session.sql("SELECT 1")
 """
-        result = move_custom_config_access_to_meta_python(_py(input_python), _py_cfg())
+        result = move_custom_config_access_to_meta_python(
+            _py(input_python, moved_meta_keys=frozenset({"custom_key"})), _py_cfg()
+        )
 
         assert result.refactored
         assert result.refactored_content == expected_python
@@ -588,7 +638,9 @@ class TestMoveCustomConfigAccessToMetaPython:
     val = dbt.config.meta_get("custom_key", outer(inner()))
     return session.sql("SELECT 1")
 """
-        result = move_custom_config_access_to_meta_python(_py(input_python), _py_cfg())
+        result = move_custom_config_access_to_meta_python(
+            _py(input_python, moved_meta_keys=frozenset({"custom_key"})), _py_cfg()
+        )
 
         assert result.refactored
         assert result.refactored_content == expected_python
@@ -607,7 +659,9 @@ class TestMoveCustomConfigAccessToMetaPython:
     val = dbt.config.meta_get("custom_key", "value (with parens)")
     return session.sql("SELECT 1")
 """
-        result = move_custom_config_access_to_meta_python(_py(input_python), _py_cfg())
+        result = move_custom_config_access_to_meta_python(
+            _py(input_python, moved_meta_keys=frozenset({"custom_key"})), _py_cfg()
+        )
 
         assert result.refactored
         assert result.refactored_content == expected_python
@@ -631,7 +685,9 @@ class TestMoveCustomConfigAccessToMetaPython:
     )
     return session.sql("SELECT 1")
 """
-        result = move_custom_config_access_to_meta_python(_py(input_python), _py_cfg())
+        result = move_custom_config_access_to_meta_python(
+            _py(input_python, moved_meta_keys=frozenset({"custom_key"})), _py_cfg()
+        )
 
         assert result.refactored
         assert result.refactored_content == expected_python
@@ -659,8 +715,8 @@ def model(dbt, session):
     This model aggregates data from multiple sources
     and applies custom classification logic.
     \"\"\"
-    # Configure the model
-    dbt.config(materialized="table", refresh_frequency="daily")
+    # Configure the model (custom key must match the one moved to meta in the same file)
+    dbt.config(materialized="table", data_classification="daily")
 
     # Get custom classification
     classification = dbt.config.get("data_classification")
@@ -682,8 +738,8 @@ def model(dbt, session):
     This model aggregates data from multiple sources
     and applies custom classification logic.
     \"\"\"
-    # Configure the model
-    dbt.config(materialized="table", meta={"refresh_frequency": "daily"})
+    # Configure the model (custom key must match the one moved to meta in the same file)
+    dbt.config(materialized="table", meta={"data_classification": "daily"})
 
     # Get custom classification
     classification = dbt.config.meta_get("data_classification")
@@ -723,10 +779,12 @@ def model(dbt, session):
     return session.sql("SELECT 1")
 """
         input_with_access = """def model(dbt, session):
+    dbt.config(custom_key="value")
     val = dbt.config.get("custom_key")
     return session.sql("SELECT 1")
 """
         expected_with_access = """def model(dbt, session):
+    dbt.config(meta={"custom_key": "value"})
     val = dbt.config.meta_get("custom_key")
     return session.sql("SELECT 1")
 """

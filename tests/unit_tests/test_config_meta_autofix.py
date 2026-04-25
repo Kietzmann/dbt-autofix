@@ -18,8 +18,13 @@ class MockSchemaSpecs:
         }
 
 
-def _sql(sql_str: str) -> SQLContent:
-    return SQLContent(original_str=sql_str, current_str=sql_str, current_file_path=Path("model.sql"))
+def _sql(sql_str: str, keys_moved_to_meta: frozenset[str] | None = None) -> SQLContent:
+    return SQLContent(
+        original_str=sql_str,
+        current_str=sql_str,
+        current_file_path=Path("model.sql"),
+        keys_moved_to_meta=keys_moved_to_meta if keys_moved_to_meta is not None else frozenset(),
+    )
 
 
 def _sql_cfg(schema_specs=None, node_type: str = "models") -> SQLRefactorConfig:
@@ -50,7 +55,7 @@ SELECT
     '{{ config.get('materialized') }}' as mat
 """
 
-    result = move_custom_config_access_to_meta_sql_improved(_sql(input_sql), _sql_cfg())
+    result = move_custom_config_access_to_meta_sql_improved(_sql(input_sql, frozenset({"custom_key"})), _sql_cfg())
 
     assert result.refactored
     assert result.refactored_content == expected_sql
@@ -71,7 +76,9 @@ SELECT
     '{{ config.meta_get('another_key', var('my_var')) }}' as another
 """
 
-    result = move_custom_config_access_to_meta_sql_improved(_sql(input_sql), _sql_cfg())
+    result = move_custom_config_access_to_meta_sql_improved(
+        _sql(input_sql, frozenset({"custom_key", "another_key"})), _sql_cfg()
+    )
 
     assert result.refactored
     assert result.refactored_content == expected_sql
@@ -90,7 +97,7 @@ def test_config_require_refactor():
 {% set mat = config.require('materialized') %}
 """
 
-    result = move_custom_config_access_to_meta_sql_improved(_sql(input_sql), _sql_cfg())
+    result = move_custom_config_access_to_meta_sql_improved(_sql(input_sql, frozenset({"custom_required"})), _sql_cfg())
 
     assert result.refactored
     assert result.refactored_content == expected_sql
@@ -107,7 +114,7 @@ def test_config_with_validator():
 {%- set file_format = config.meta_get('custom_format', validator=validation.any[basestring]) -%}
 """
 
-    result = move_custom_config_access_to_meta_sql_improved(_sql(input_sql), _sql_cfg())
+    result = move_custom_config_access_to_meta_sql_improved(_sql(input_sql, frozenset({"custom_format"})), _sql_cfg())
 
     assert result.refactored
     assert result.refactored_content == expected_sql
@@ -145,7 +152,7 @@ def test_chained_access_warning():
 {% set another = config.meta_get('custom_dict').get('key', 'default') %}
 """
 
-    result = move_custom_config_access_to_meta_sql_improved(_sql(input_sql), _sql_cfg())
+    result = move_custom_config_access_to_meta_sql_improved(_sql(input_sql, frozenset({"custom_dict"})), _sql_cfg())
 
     assert result.refactored
     assert result.refactored_content == expected_sql
@@ -167,7 +174,9 @@ def test_mixed_quotes():
 {{ config.meta_get(  "custom_key3"  ) }}
 """
 
-    result = move_custom_config_access_to_meta_sql_improved(_sql(input_sql), _sql_cfg())
+    result = move_custom_config_access_to_meta_sql_improved(
+        _sql(input_sql, frozenset({"custom_key1", "custom_key2", "custom_key3"})), _sql_cfg()
+    )
 
     assert result.refactored
     assert result.refactored_content == expected_sql
@@ -188,7 +197,9 @@ def test_complex_defaults():
 {{ config.meta_get('custom_none', none) }}
 """
 
-    result = move_custom_config_access_to_meta_sql_improved(_sql(input_sql), _sql_cfg())
+    result = move_custom_config_access_to_meta_sql_improved(
+        _sql(input_sql, frozenset({"custom_list", "custom_dict", "custom_none"})), _sql_cfg()
+    )
 
     assert result.refactored
     assert result.refactored_content == expected_sql
@@ -230,7 +241,7 @@ def test_multiline_config_calls():
 ) }}
 """
 
-    result = move_custom_config_access_to_meta_sql_improved(_sql(input_sql), _sql_cfg())
+    result = move_custom_config_access_to_meta_sql_improved(_sql(input_sql, frozenset({"custom_key"})), _sql_cfg())
 
     assert result.refactored
     assert result.refactored_content == expected_sql
@@ -255,7 +266,7 @@ def test_config_get_with_named_default_parameter():
 {{ config.meta_get('custom_config', default=dest_columns | map(attribute="quoted") | list) }}
 """
 
-    result = move_custom_config_access_to_meta_sql_improved(_sql(input_sql), _sql_cfg())
+    result = move_custom_config_access_to_meta_sql_improved(_sql(input_sql, frozenset({"custom_config"})), _sql_cfg())
 
     assert result.refactored
     assert result.refactored_content == expected_sql
@@ -286,8 +297,19 @@ SELECT
     '{{ model.config.get('materialized') }}' as mat
 """
 
-    result = move_custom_config_access_to_meta_sql_improved(_sql(input_sql), _sql_cfg())
+    result = move_custom_config_access_to_meta_sql_improved(_sql(input_sql, frozenset({"custom_key"})), _sql_cfg())
 
     assert result.refactored
     assert result.refactored_content == expected_sql
     assert len(result.deprecation_refactors) == 1
+
+
+def test_skips_get_when_key_not_moved_in_run():
+    """config.get of a custom key not in keys_moved_to_meta should not become meta_get."""
+    input_sql = """
+SELECT '{{ config.get('my_custom') }}' as x
+"""
+    result = move_custom_config_access_to_meta_sql_improved(_sql(input_sql, frozenset()), _sql_cfg())
+    assert not result.refactored
+    assert result.refactored_content == input_sql
+    assert any("not moved to meta" in w for w in result.refactor_warnings)
