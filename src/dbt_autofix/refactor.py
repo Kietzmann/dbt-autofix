@@ -59,6 +59,7 @@ from dbt_autofix.refactors.yml import load_yaml
 from dbt_autofix.retrieve_schemas import (
     SchemaSpecs,
 )
+from dbt_autofix.schema_yml_model_meta import SchemaYmlModelMetaResolver
 from dbt_autofix.semantic_definitions import SemanticDefinitions
 
 error_console = Console(stderr=True)
@@ -255,6 +256,50 @@ def skip_file(file_path: Path, select: Optional[List[str]] = None) -> bool:
         return False
 
 
+def _collect_model_stems_with_sql_get_usage(
+    path: Path, paths_to_node_type: Dict[str, str], select: Optional[List[str]] = None
+) -> set[str]:
+    stems: set[str] = set()
+    for rel_path, node_type in paths_to_node_type.items():
+        if node_type != "models":
+            continue
+        base = (path / rel_path).resolve()
+        if not base.exists():
+            continue
+        for sql_file in base.glob("**/*.sql"):
+            if skip_file(base, select):
+                continue
+            try:
+                content = sql_file.read_text()
+            except OSError:
+                continue
+            if "config.get(" in content:
+                stems.add(sql_file.stem)
+    return stems
+
+
+def _collect_model_stems_with_python_get_usage(
+    path: Path, paths_to_node_type: Dict[str, str], select: Optional[List[str]] = None
+) -> set[str]:
+    stems: set[str] = set()
+    for rel_path, node_type in paths_to_node_type.items():
+        if node_type != "models":
+            continue
+        base = (path / rel_path).resolve()
+        if not base.exists():
+            continue
+        for py_file in base.glob("**/*.py"):
+            if skip_file(base, select):
+                continue
+            try:
+                content = py_file.read_text()
+            except OSError:
+                continue
+            if "dbt.config.get(" in content:
+                stems.add(py_file.stem)
+    return stems
+
+
 def process_sql_files(
     path: Path,
     sql_paths_to_node_type: Dict[str, str],
@@ -263,6 +308,8 @@ def process_sql_files(
     select: Optional[List[str]] = None,
     behavior_change: bool = False,
     all: bool = False,
+    schema_yml_meta_by_model: Optional[dict[str, frozenset[str]]] = None,
+    schema_yml_meta_resolver: Optional[SchemaYmlModelMetaResolver] = None,
 ) -> List[SQLRefactorResult]:
     """Process all SQL files in the given paths for unmatched endings.
 
@@ -291,13 +338,24 @@ def process_sql_files(
         all_rules if all else behavior_change_rules if behavior_change else safe_change_rules
     )
 
+    if schema_yml_meta_resolver is None and schema_yml_meta_by_model is None:
+        candidate_stems = _collect_model_stems_with_sql_get_usage(path, sql_paths_to_node_type, select)
+        schema_yml_meta_resolver = SchemaYmlModelMetaResolver(
+            path, sql_paths_to_node_type, target_model_names=candidate_stems
+        )
+
     for sql_path, node_type in sql_paths_to_node_type.items():
         full_path = (path / sql_path).resolve()
         if not full_path.exists():
             error_console.print(f"Warning: Path {full_path} does not exist", style="yellow")
             continue
 
-        config = SQLRefactorConfig(schema_specs=schema_specs, node_type=node_type)
+        config = SQLRefactorConfig(
+            schema_specs=schema_specs,
+            node_type=node_type,
+            schema_yml_meta_by_model=dict(schema_yml_meta_by_model or {}),
+            schema_yml_meta_resolver=schema_yml_meta_resolver,
+        )
 
         sql_files = full_path.glob("**/*.sql")
         for sql_file in sql_files:
@@ -338,6 +396,8 @@ def process_python_files(
     select: Optional[List[str]] = None,
     behavior_change: bool = False,
     all: bool = False,
+    schema_yml_meta_by_model: Optional[dict[str, frozenset[str]]] = None,
+    schema_yml_meta_resolver: Optional[SchemaYmlModelMetaResolver] = None,
 ) -> List[PythonRefactorResult]:
     """Process all Python model files in the given paths.
 
@@ -368,6 +428,12 @@ def process_python_files(
         all_rules if all else behavior_change_rules if behavior_change else safe_change_rules
     )
 
+    if schema_yml_meta_resolver is None and schema_yml_meta_by_model is None:
+        candidate_stems = _collect_model_stems_with_python_get_usage(path, python_paths_to_node_type, select)
+        schema_yml_meta_resolver = SchemaYmlModelMetaResolver(
+            path, python_paths_to_node_type, target_model_names=candidate_stems
+        )
+
     # Only process model paths (Python models are in model-paths)
     for python_path, node_type in python_paths_to_node_type.items():
         # Python models only exist in model paths
@@ -378,7 +444,12 @@ def process_python_files(
         if not full_path.exists():
             continue
 
-        config = PythonRefactorConfig(schema_specs=schema_specs, node_type=node_type)
+        config = PythonRefactorConfig(
+            schema_specs=schema_specs,
+            node_type=node_type,
+            schema_yml_meta_by_model=dict(schema_yml_meta_by_model or {}),
+            schema_yml_meta_resolver=schema_yml_meta_resolver,
+        )
 
         python_files = full_path.glob("**/*.py")
         for python_file in python_files:
@@ -586,9 +657,32 @@ def changeset_all_files(
     dbt_paths_to_node_type = get_dbt_files_paths(path, include_packages, include_private_packages)
     dbt_paths = list(dbt_paths_to_node_type.keys())
 
-    sql_results = process_sql_files(path, dbt_paths_to_node_type, schema_specs, dry_run, select, behavior_change, all)
+    sql_candidate_stems = _collect_model_stems_with_sql_get_usage(path, dbt_paths_to_node_type, select)
+    python_candidate_stems = _collect_model_stems_with_python_get_usage(path, dbt_paths_to_node_type, select)
+    schema_yml_meta_resolver = SchemaYmlModelMetaResolver(
+        path,
+        dbt_paths_to_node_type,
+        target_model_names=(sql_candidate_stems | python_candidate_stems),
+    )
+    sql_results = process_sql_files(
+        path,
+        dbt_paths_to_node_type,
+        schema_specs,
+        dry_run,
+        select,
+        behavior_change,
+        all,
+        schema_yml_meta_resolver=schema_yml_meta_resolver,
+    )
     python_results = process_python_files(
-        path, dbt_paths_to_node_type, schema_specs, dry_run, select, behavior_change, all
+        path,
+        dbt_paths_to_node_type,
+        schema_specs,
+        dry_run,
+        select,
+        behavior_change,
+        all,
+        schema_yml_meta_resolver=schema_yml_meta_resolver,
     )
 
     # Process YAML files

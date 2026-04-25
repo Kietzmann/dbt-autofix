@@ -9,6 +9,7 @@ from ruamel.yaml.comments import CommentedMap
 
 from dbt_autofix.refactors.fancy_quotes_utils import restore_fancy_quotes
 from dbt_autofix.retrieve_schemas import SchemaSpecs
+from dbt_autofix.schema_yml_model_meta import SchemaYmlModelMetaResolver
 from dbt_autofix.semantic_definitions import SemanticDefinitions
 
 console = Console()
@@ -76,12 +77,17 @@ class DbtProjectYMLRefactorConfig:
 class SQLRefactorConfig:
     schema_specs: SchemaSpecs
     node_type: str
+    # model name -> string keys in schema.yml (models[].config.meta / meta); gated gets union this.
+    schema_yml_meta_by_model: dict[str, frozenset[str]] = field(default_factory=dict)
+    schema_yml_meta_resolver: Optional[SchemaYmlModelMetaResolver] = None
 
 
 @dataclass
 class PythonRefactorConfig:
     schema_specs: SchemaSpecs
     node_type: str
+    schema_yml_meta_by_model: dict[str, frozenset[str]] = field(default_factory=dict)
+    schema_yml_meta_resolver: Optional[SchemaYmlModelMetaResolver] = None
 
 
 # ---------------------------------------------------------------------------

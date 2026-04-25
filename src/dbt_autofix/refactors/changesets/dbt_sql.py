@@ -33,6 +33,14 @@ def _string_keys_in_config_meta_value(meta_val: Any) -> set[str]:
     return out
 
 
+def _schema_yml_gating_keys(content: SQLContent, config: SQLRefactorConfig, needed: bool) -> set[str]:
+    if not needed:
+        return set()
+    if config.schema_yml_meta_resolver is not None:
+        return set(config.schema_yml_meta_resolver.get_keys(content.current_file_path.stem))
+    return set(config.schema_yml_meta_by_model.get(content.current_file_path.stem, frozenset()))
+
+
 def extract_config_macro(sql_content: str) -> Optional[str]:
     """Extract the {{ config(...) }} macro from SQL content.
 
@@ -283,15 +291,17 @@ def refactor_custom_configs_to_meta_sql(content: SQLContent, config: SQLRefactor
                 original_sql_configs = original_statically_parsed_config
                 config_source_map = original_statically_parsed_config.copy()
 
+    has_get_access = "config.get(" in sql_content
+    yml_gating = _schema_yml_gating_keys(content, config, needed=has_get_access)
     if not original_sql_configs:
-        # No config found, return early
+        # No config in file; still contribute schema.yml meta keys for get -> meta_get gating.
         return SQLRuleRefactorResult(
             rule_name="move_custom_configs_to_meta_sql",
             refactored=False,
             refactored_content=sql_content,
             original_content=sql_content,
             deprecation_refactors=[],
-            keys_contributed_moved_to_meta=frozenset(),
+            keys_contributed_moved_to_meta=frozenset(yml_gating),
         )
 
     refactored_sql_configs = deepcopy(original_sql_configs)
@@ -382,9 +392,9 @@ def refactor_custom_configs_to_meta_sql(content: SQLContent, config: SQLRefactor
 
             refactored_content = CONFIG_MACRO_PATTERN.sub(replace_config, sql_content, count=1)
 
-    # Keys already under ``meta`` (e.g. from a prior run) also gate get→meta_get, not only keys moved this run.
+    # Keys already under ``meta`` (e.g. from a prior run) and schema.yml model ``meta`` also gate get→meta_get.
     meta_keys = _string_keys_in_config_meta_value(refactored_sql_configs.get("meta"))
-    keys_for_gating: set[str] = set(moved_to_meta) | meta_keys
+    keys_for_gating: set[str] = set(moved_to_meta) | meta_keys | yml_gating
 
     return SQLRuleRefactorResult(
         rule_name="move_custom_configs_to_meta_sql",

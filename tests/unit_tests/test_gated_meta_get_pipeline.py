@@ -195,3 +195,64 @@ def test_process_python_preexisting_meta_still_allows_get_to_meta_get(
     r = results[0]
     assert "only_m" in r.keys_moved_to_meta
     assert "dbt.config.meta_get" in r.refactored_content
+
+
+def test_process_sql_keys_in_schema_yml_not_in_file_still_gates_meta_get(
+    tmp_path: Path, sql_cfg: SQLRefactorConfig
+) -> None:
+    """Meta keys that exist only in models' schema.yml (name matches file stem) allow get -> meta_get."""
+    (tmp_path / "dbt_project.yml").write_text('name: t\nversion: "1.0.0"\nconfig-version: 2\nmodel-paths: ["models"]\n')
+    models = tmp_path / "models"
+    models.mkdir()
+    (models / "in_yml.sql").write_text(
+        """{{ config(materialized='view') }}
+
+select '{{ config.get('only_in_schema_yml') }}' as x
+""",
+        encoding="utf-8",
+    )
+    (models / "schema.yml").write_text(
+        """version: 2
+models:
+  - name: in_yml
+    config:
+      meta:
+        only_in_schema_yml: "1"
+""",
+        encoding="utf-8",
+    )
+    results = process_sql_files(tmp_path, {"models": "models"}, sql_cfg.schema_specs)
+    assert len(results) == 1
+    r = results[0]
+    assert "only_in_schema_yml" in r.keys_moved_to_meta
+    assert "config.meta_get('only_in_schema_yml')" in r.refactored_content
+
+
+def test_process_python_keys_in_schema_yml_not_in_file_still_gates_meta_get(
+    tmp_path: Path, py_cfg: PythonRefactorConfig
+) -> None:
+    (tmp_path / "dbt_project.yml").write_text('name: t\nversion: "1.0.0"\nconfig-version: 2\nmodel-paths: ["models"]\n')
+    models = tmp_path / "models"
+    models.mkdir()
+    (models / "py_yml.py").write_text(
+        """def model(dbt, session):
+    dbt.config(materialized="view")
+    v = dbt.config.get("k_from_yml")
+    return session.sql("select 1")
+""",
+        encoding="utf-8",
+    )
+    (models / "schema.yml").write_text(
+        """version: 2
+models:
+  - name: py_yml
+    meta:
+      k_from_yml: "1"
+""",
+        encoding="utf-8",
+    )
+    results = process_python_files(tmp_path, {"models": "models"}, py_cfg.schema_specs)
+    assert len(results) == 1
+    r = results[0]
+    assert "k_from_yml" in r.keys_moved_to_meta
+    assert 'dbt.config.meta_get("k_from_yml")' in r.refactored_content

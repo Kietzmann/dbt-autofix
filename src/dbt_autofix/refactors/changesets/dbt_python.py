@@ -33,6 +33,14 @@ DBT_CONFIG_GET_PATTERN = re.compile(
 )
 
 
+def _schema_yml_gating_keys(content: PythonContent, config: PythonRefactorConfig, needed: bool) -> set[str]:
+    if not needed:
+        return set()
+    if config.schema_yml_meta_resolver is not None:
+        return set(config.schema_yml_meta_resolver.get_keys(content.current_file_path.stem))
+    return set(config.schema_yml_meta_by_model.get(content.current_file_path.stem, frozenset()))
+
+
 def _find_matching_paren(content: str, start: int) -> int:
     """Find the position of the matching closing parenthesis.
 
@@ -176,6 +184,8 @@ def refactor_custom_configs_to_meta_python(
     deprecation_refactors: List[DbtDeprecationRefactor] = []
 
     # Find all dbt.config() calls
+    has_get_access = "dbt.config.get(" in python_content
+    yml_gating = _schema_yml_gating_keys(content, config, needed=has_get_access)
     matches = list(DBT_CONFIG_CALL_PATTERN.finditer(python_content))
     if not matches:
         return PythonRuleRefactorResult(
@@ -184,7 +194,7 @@ def refactor_custom_configs_to_meta_python(
             refactored_content=python_content,
             original_content=python_content,
             deprecation_refactors=[],
-            keys_contributed_moved_to_meta=frozenset(),
+            keys_contributed_moved_to_meta=frozenset(yml_gating),
         )
 
     allowed_config_fields = schema_specs.yaml_specs_per_node_type[node_type].allowed_config_fields
@@ -289,7 +299,7 @@ def refactor_custom_configs_to_meta_python(
         refactored_content=refactored_content,
         original_content=python_content,
         deprecation_refactors=deprecation_refactors,
-        keys_contributed_moved_to_meta=frozenset(keys_moved | meta_keys_from_calls),
+        keys_contributed_moved_to_meta=frozenset(keys_moved | meta_keys_from_calls | yml_gating),
     )
 
 
