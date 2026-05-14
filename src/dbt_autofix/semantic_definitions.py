@@ -10,14 +10,11 @@ from dbt_autofix.refactors.yml import get_list, load_yaml
 
 class SemanticDefinitions:
     def __init__(self, root_path: Path, dbt_paths: List[str]):
-        # All semantic models from semantic_models: entries in schema.yml files, keyed by their model key
-        self.semantic_models: Dict[Tuple[str, Optional[str]], CommentedMap] = self.collect_semantic_models(
-            root_path, dbt_paths
-        )
-        # All model keys from models: entries in schema.yml files
-        self.model_yml_keys: Set[Tuple[str, Optional[str]]] = self.collect_model_yml_keys(root_path, dbt_paths)
-        # All top-level metrics from metrics: entries in schema.yml files
-        self.initial_metrics: Dict[str, CommentedMap] = self.collect_metrics(root_path, dbt_paths)
+        (
+            self.semantic_models,
+            self.model_yml_keys,
+            self.initial_metrics,
+        ) = self._collect_yaml_definitions(root_path, dbt_paths)
 
         self.merged_semantic_models: Set[str] = set()
         self._semantic_model_to_dbt_model_name_map: Dict[str, str] = {}
@@ -83,53 +80,39 @@ class SemanticDefinitions:
     def get_model_for_semantic_model(self, semantic_model_name: str) -> str:
         return self._semantic_model_to_dbt_model_name_map[semantic_model_name]
 
-    def collect_semantic_models(
+    def _collect_yaml_definitions(
         self, root_path: Path, dbt_paths: List[str]
-    ) -> Dict[Tuple[str, Optional[str]], CommentedMap]:
+    ) -> Tuple[
+        Dict[Tuple[str, Optional[str]], CommentedMap],
+        Set[Tuple[str, Optional[str]]],
+        Dict[str, CommentedMap],
+    ]:
         semantic_models: Dict[Tuple[str, Optional[str]], CommentedMap] = {}
-        for dbt_path in dbt_paths:
-            yaml_files = set((root_path / Path(dbt_path)).resolve().glob("**/*.yml")).union(
-                set((root_path / Path(dbt_path)).resolve().glob("**/*.yaml"))
-            )
-            for yml_file in yaml_files:
-                yml_dict = load_yaml(yml_file)
-                if "semantic_models" in yml_dict:
-                    for semantic_model in yml_dict["semantic_models"]:
-                        ref = statically_parse_ref(semantic_model["model"])
-                        if ref:
-                            semantic_models[(ref.name, ref.version)] = semantic_model
-        return semantic_models
+        model_yml_keys: Set[Tuple[str, Optional[str]]] = set()
+        initial_metrics: Dict[str, CommentedMap] = {}
 
-    def collect_model_yml_keys(self, root_path: Path, dbt_paths: List[str]) -> Set[Tuple[str, Optional[str]]]:
-        model_keys: Set[Tuple[str, Optional[str]]] = set()
-        for dbt_path in dbt_paths:
-            yaml_files = set((root_path / Path(dbt_path)).resolve().glob("**/*.yml")).union(
-                set((root_path / Path(dbt_path)).resolve().glob("**/*.yaml"))
-            )
-            for yml_file in yaml_files:
-                yml_dict = load_yaml(yml_file)
-                if "models" in yml_dict:
-                    for model in yml_dict["models"]:
-                        if not model.get("versions"):
-                            model_keys.add((model["name"], None))
-                        else:
-                            for version in model["versions"]:
-                                model_keys.add((model["name"], version.get("v")))
-        return model_keys
-
-    def collect_metrics(self, root_path: Path, dbt_paths: List[str]) -> Dict[str, CommentedMap]:
-        """Returns dict of metric_name -> metric"""
-        metrics: Dict[str, CommentedMap] = {}
         for dbt_path in dbt_paths:
             yaml_files = set((root_path / Path(dbt_path)).resolve().glob("**/*.yml")).union(
                 set((root_path / Path(dbt_path)).resolve().glob("**/*.yaml"))
             )
             for yml_file in sorted(yaml_files):
                 yml_dict = load_yaml(yml_file)
+                if "semantic_models" in yml_dict:
+                    for semantic_model in yml_dict["semantic_models"]:
+                        ref = statically_parse_ref(semantic_model["model"])
+                        if ref:
+                            semantic_models[(ref.name, ref.version)] = semantic_model
+                if "models" in yml_dict:
+                    for model in yml_dict["models"]:
+                        if not model.get("versions"):
+                            model_yml_keys.add((model["name"], None))
+                        else:
+                            for version in model["versions"]:
+                                model_yml_keys.add((model["name"], version.get("v")))
                 if "metrics" in yml_dict:
                     for metric in yml_dict["metrics"]:
-                        metrics[metric["name"]] = metric
-        return metrics
+                        initial_metrics[metric["name"]] = metric
+        return semantic_models, model_yml_keys, initial_metrics
 
 
 @dataclass

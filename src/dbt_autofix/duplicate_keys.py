@@ -7,7 +7,7 @@ import yamllint.config
 import yamllint.linter
 from rich.console import Console
 
-from dbt_autofix.refactors.yml import DbtYAML
+from dbt_autofix.refactors.yml import get_dbt_yaml
 
 console = Console()
 
@@ -74,7 +74,7 @@ def find_duplicate_keys(
                 )
         if file_with_duplicate and not dry_run:
             without_duplicates = yaml.safe_load(file_content)
-            ruamel_yaml = DbtYAML()
+            ruamel_yaml = get_dbt_yaml()
             ruamel_yaml.dump_to_string(without_duplicates)
 
     # Check package YML files

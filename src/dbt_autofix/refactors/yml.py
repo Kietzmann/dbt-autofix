@@ -1,4 +1,5 @@
 import io
+from functools import lru_cache
 from pathlib import Path
 from typing import Any, Dict, Union
 
@@ -43,6 +44,12 @@ class DbtYAML(YAML):
             return buf.getvalue()[:-1].decode("utf-8")
 
 
+@lru_cache(maxsize=1)
+def get_dbt_yaml() -> DbtYAML:
+    """Return a process-wide `DbtYAML` used for load/dump to avoid allocator churn (CLI is single-threaded)."""
+    return DbtYAML()
+
+
 def get_list(node: CommentedMap, key: str) -> CommentedSeq:
     return node.get(key) or CommentedSeq()
 
@@ -52,7 +59,7 @@ def get_dict(node: CommentedMap, key: str) -> CommentedMap:
 
 
 def load_yaml(path_or_str: Union[Path, str]) -> CommentedMap:
-    yaml = DbtYAML()
+    yaml = get_dbt_yaml()
     return yaml.load(path_or_str) or CommentedMap()
 
 
@@ -63,6 +70,6 @@ def dict_to_yaml_str(content: Dict[str, Any], write_empty: bool = False) -> str:
     if not content and write_empty:
         return ""
 
-    yaml = DbtYAML()
+    yaml = get_dbt_yaml()
     file_text = yaml.dump_to_string(content)
     return file_text
