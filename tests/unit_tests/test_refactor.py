@@ -18,10 +18,12 @@ from dbt_autofix.refactor import (
     changeset_remove_extra_tabs,
     changeset_remove_indentation_version,
     changeset_replace_non_alpha_underscores_in_name_values,
+    find_files,
     is_project_config_file,
     load_dbtignore,
     make_file_skipper,
     remove_unmatched_endings,
+    resolve_selected_files,
     skip_file,
 )
 from dbt_autofix.refactors.changesets.dbt_project_yml import rec_check_yaml_path
@@ -1411,6 +1413,65 @@ class TestSkipFile:
         assert not should_skip(Path("/path/to/a.sql"))
         assert not should_skip(Path("/path/to/b.sql"))
         assert should_skip(Path("/path/to/c.sql"))
+
+
+class TestSelectedFiles:
+    """Tests for resolve_selected_files and find_files"""
+
+    def _project(self, root: Path) -> dict:
+        files = {
+            "a_sql": root / "models" / "a.sql",
+            "b_yml": root / "models" / "sub" / "b.yml",
+            "c_yaml": root / "models" / "c.yaml",
+            "seed": root / "seeds" / "s.csv",
+        }
+        for f in files.values():
+            f.parent.mkdir(parents=True, exist_ok=True)
+            f.touch()
+        return {k: v.resolve() for k, v in files.items()}
+
+    def test_no_select_returns_none(self):
+        assert resolve_selected_files(None) is None
+        assert resolve_selected_files([]) is None
+
+    def test_all_existing_files_are_returned_resolved(self, tmp_path):
+        files = self._project(tmp_path)
+        assert resolve_selected_files([str(files["a_sql"]), str(files["b_yml"])]) == [files["a_sql"], files["b_yml"]]
+
+    @pytest.mark.parametrize("select", ["models", "models/su", "models/missing.sql"])
+    def test_directory_prefix_or_missing_select_falls_back_to_walk(self, tmp_path, select):
+        files = self._project(tmp_path)
+        assert resolve_selected_files([str(files["a_sql"]), str(tmp_path / select)]) is None
+
+    def test_find_files_walks_without_selection(self, tmp_path):
+        files = self._project(tmp_path)
+        base = (tmp_path / "models").resolve()
+        assert sorted(find_files(base, (".yml", ".yaml"))) == sorted([files["b_yml"], files["c_yaml"]])
+
+    def test_find_files_with_selection_does_not_walk(self, tmp_path, monkeypatch):
+        files = self._project(tmp_path)
+        base = (tmp_path / "models").resolve()
+
+        def fail_glob(self, pattern):
+            raise AssertionError("Path.glob called with an explicit file selection")
+
+        monkeypatch.setattr(Path, "glob", fail_glob)
+        selected = [files["a_sql"], files["b_yml"], files["seed"]]
+        assert find_files(base, (".yml", ".yaml"), selected) == [files["b_yml"]]
+        assert find_files(base, (".sql",), selected) == [files["a_sql"]]
+
+    def test_changeset_all_files_with_file_select_matches_walk(self, tmp_path):
+        (tmp_path / "dbt_project.yml").write_text("name: p\nversion: '1.0'\nmodel-paths: ['models']\n")
+        model = tmp_path / "models" / "m.sql"
+        model.parent.mkdir()
+        model.write_text("select 1\n{% endmacro %}\n")
+        (tmp_path / "models" / "other.sql").write_text("select 2\n{% endmacro %}\n")
+
+        def changed(select):
+            _, sql_results, _ = changeset_all_files(tmp_path, MockSchemaSpecs(), dry_run=True, select=select)
+            return sorted(r.file_path.name for r in sql_results if r.refactored)
+
+        assert changed([str(model)]) == changed([str(tmp_path / "models" / "m")]) == ["m.sql"]
 
 
 class TestIsProjectConfigFile:

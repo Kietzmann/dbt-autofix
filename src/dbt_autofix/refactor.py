@@ -163,6 +163,7 @@ def process_yaml_files_except_dbt_project(
         ]
 
     should_skip = make_file_skipper(select, dbtignore, root_path)
+    selected_files = resolve_selected_files(select)
 
     def _apply_changesets(
         file_name_to_yaml_results: Dict[str, YMLRefactorResult],
@@ -170,9 +171,7 @@ def process_yaml_files_except_dbt_project(
         cfg: YMLRefactorConfig,
     ) -> None:
         for model_path in model_paths:
-            yaml_files = set((root_path / Path(model_path)).resolve().glob("**/*.yml")).union(
-                set((root_path / Path(model_path)).resolve().glob("**/*.yaml"))
-            )
+            yaml_files = find_files((root_path / Path(model_path)).resolve(), (".yml", ".yaml"), selected_files)
 
             for yml_file in yaml_files:
                 if should_skip(yml_file):
@@ -338,6 +337,27 @@ def make_file_skipper(
     return _skip
 
 
+def resolve_selected_files(select: Optional[List[str]] = None) -> Optional[List[Path]]:
+    """Return the resolved select paths if every one is an existing file, otherwise None.
+
+    The pre-commit hook always selects individual files, so the scans can visit just those instead of
+    walking every dbt path and filtering each file. Directory or prefix selects keep the walk.
+    """
+    if not select:
+        return None
+    selected_files = [Path(select_path).resolve() for select_path in select]
+    if not all(selected_file.is_file() for selected_file in selected_files):
+        return None
+    return selected_files
+
+
+def find_files(base: Path, suffixes: Tuple[str, ...], selected_files: Optional[List[Path]] = None) -> List[Path]:
+    """Files under base ending in one of the suffixes, limited to selected_files when given."""
+    if selected_files is None:
+        return [file for suffix in suffixes for file in base.glob(f"**/*{suffix}")]
+    return [file for file in selected_files if file.suffix in suffixes and file.is_relative_to(base)]
+
+
 def skip_file(
     file_path: Path,
     select: Optional[List[str]] = None,
@@ -407,6 +427,7 @@ def process_sql_files(
     )
 
     should_skip = make_file_skipper(select, dbtignore, path)
+    selected_files = resolve_selected_files(select)
 
     for sql_path, node_type in sql_paths_to_node_type.items():
         full_path = (path / sql_path).resolve()
@@ -421,7 +442,7 @@ def process_sql_files(
             resource_rename_map=resource_rename_map,
         )
 
-        sql_files = full_path.glob("**/*.sql")
+        sql_files = find_files(full_path, (".sql",), selected_files)
         for sql_file in sql_files:
             if should_skip(sql_file):
                 continue
@@ -493,6 +514,7 @@ def process_python_files(
     )
 
     should_skip = make_file_skipper(select, dbtignore, path)
+    selected_files = resolve_selected_files(select)
 
     # Only process model paths (Python models are in model-paths)
     for python_path, node_type in python_paths_to_node_type.items():
@@ -506,7 +528,7 @@ def process_python_files(
 
         config = PythonRefactorConfig(schema_specs=schema_specs, node_type=node_type)
 
-        python_files = full_path.glob("**/*.py")
+        python_files = find_files(full_path, (".py",), selected_files)
         for python_file in python_files:
             if should_skip(python_file):
                 continue
