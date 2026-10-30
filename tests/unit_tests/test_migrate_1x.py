@@ -196,6 +196,55 @@ def test_tests_to_data_tests_skips_when_data_tests_present():
     assert not result.refactored
 
 
+def test_tests_to_data_tests_keeps_formatting():
+    # Only the keys change: indentation, comments, quotes, block scalars and merge keys are kept as written
+    src = (
+        "version: 2\n"
+        "x-defaults: &defaults\n"
+        "  tests:  # shared\n"
+        "  - unique\n"
+        "models:\n"
+        "- name: m\n"
+        "  description: >\n"
+        "    Folded\n"
+        "    text\n"
+        "  <<: *defaults\n"
+        "  columns:\n"
+        "  - {name: id, tests: [not_null]}\n"
+        "  - name: 'x'\n"
+        '    "tests":\n'
+        "    - accepted_values:\n"
+        "        values: ['a']\n"
+    )
+    result = changeset_1x_tests_to_data_tests_yml(_yml(src), YMLRefactorConfig(NO_SCHEMA_SPECS))
+    assert result.refactored
+    assert result.refactored_yaml == (
+        src.replace("  tests:  # shared", "  data_tests:  # shared")
+        .replace("{name: id, tests:", "{name: id, data_tests:")
+        .replace('"tests":', '"data_tests":')
+    )
+    assert len(result.deprecation_refactors) == 3
+
+
+def test_tests_to_data_tests_renames_alias_target_once():
+    src = "x: &t\n  tests: [a]\nmodels:\n  - name: m\n    config: *t\n  - name: n\n    config: *t\n"
+    result = changeset_1x_tests_to_data_tests_yml(_yml(src), YMLRefactorConfig(NO_SCHEMA_SPECS))
+    assert result.refactored_yaml == src.replace("  tests:", "  data_tests:")
+    assert len(result.deprecation_refactors) == 1
+
+
+def test_tests_to_data_tests_ignores_empty_mappings():
+    src = "models:\n  - name: m\n    meta: {}\n    tests: [unique]\n"
+    result = changeset_1x_tests_to_data_tests_yml(_yml(src), YMLRefactorConfig(NO_SCHEMA_SPECS))
+    assert result.refactored_yaml == src.replace("tests:", "data_tests:")
+
+
+def test_predicates_project_keeps_formatting():
+    src = "name: p\nmodels:\n  p:\n    +predicates:   # c\n    - a = b\n"
+    result = changeset_1x_rename_predicates_project(_yml(src), DbtProjectYMLRefactorConfig(NO_SCHEMA_SPECS, Path(".")))
+    assert result.refactored_yaml == src.replace("+predicates:", "+incremental_predicates:")
+
+
 def test_tests_to_data_tests_project_top_level():
     src = "tests:\n  +store_failures: true\n"
     result = changeset_1x_tests_to_data_tests_project(

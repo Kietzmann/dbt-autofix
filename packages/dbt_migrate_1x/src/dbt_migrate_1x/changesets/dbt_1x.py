@@ -1,6 +1,6 @@
 import re
 from pathlib import Path
-from typing import Any, Dict, Iterable, Iterator, List
+from typing import Any, Dict, Iterable, Iterator, List, Optional, Tuple
 
 from ruamel.yaml.comments import CommentedMap, CommentedSeq
 
@@ -43,32 +43,81 @@ def _config_mappings(node: Any) -> Iterator[CommentedMap]:
             yield cfg
 
 
+# A key rename to apply to the source text: (line, column, old key, new key), 0-based like ruamel's
+# line/column info.
+KeyEdit = Tuple[int, int, str, str]
+
+
 def _rename_keys(
     mappings: Iterable[CommentedMap],
     renames: Dict[str, str],
     logs: List[str],
     log_fmt: str = "Renamed '{old}' to '{new}'",
-) -> None:
+) -> List[KeyEdit]:
     """Apply `renames` to every mapping in `mappings`, logging each rename.
 
     A key is only renamed when its replacement is absent, so an already-migrated node is never
-    clobbered. `mappings` is materialized up front so renaming cannot disturb an in-progress walk.
+    clobbered. Only keys written in the mapping itself are renamed: a key inherited through a
+    `<<:` merge is renamed where it is defined. `mappings` is materialized up front so renaming
+    cannot disturb an in-progress walk, and a mapping reached twice through an alias is renamed once.
+
+    Returns where each renamed key is in the source text, so the rename can be applied there.
     """
+    edits: List[KeyEdit] = []
+    seen: set[int] = set()
     for mapping in list(mappings):
+        if id(mapping) in seen:
+            continue
+        seen.add(id(mapping))
+        # `lc.data` holds the position of every key written in the mapping, but not of merged keys.
+        # It is None for an empty mapping.
+        positions = mapping.lc.data or {}
         for old_key, new_key in renames.items():
-            if old_key in mapping and new_key not in mapping:
+            if old_key in positions and new_key not in mapping:
+                line, col = positions[old_key][:2]
+                edits.append((line, col, old_key, new_key))
                 _rename_key(mapping, old_key, new_key)
                 logs.append(log_fmt.format(old=old_key, new=new_key))
+    return edits
+
+
+def _apply_key_edits(yml_str: str, edits: List[KeyEdit]) -> Optional[str]:
+    """Rename keys in place in the source text, leaving every other byte untouched.
+
+    Dumping the parsed YAML instead would reformat the whole file (indentation, block scalars,
+    merge keys, ...). Returns None if a key isn't found where the parser said it is.
+    """
+    lines = yml_str.split("\n")
+    for line, col, old_key, new_key in sorted(edits, reverse=True):
+        text = lines[line] if line < len(lines) else ""
+        for quote in ("", '"', "'"):
+            token = f"{quote}{old_key}{quote}"
+            if text.startswith(token, col):
+                lines[line] = f"{text[:col]}{quote}{new_key}{quote}{text[col + len(token) :]}"
+                break
+        else:
+            return None
+    return "\n".join(lines)
 
 
 def _yml_result(
-    rule_name: str, deprecation: str, yml_str: str, yml_dict: Any, logs: List[str]
+    rule_name: str,
+    deprecation: str,
+    yml_str: str,
+    yml_dict: Any,
+    logs: List[str],
+    edits: Optional[List[KeyEdit]] = None,
 ) -> YMLRuleRefactorResult:
     refactored = len(logs) > 0
+    refactored_yaml = yml_str
+    if refactored:
+        # Keep the file's formatting when the change is only key renames
+        edited = _apply_key_edits(yml_str, edits) if edits else None
+        refactored_yaml = edited if edited is not None else DbtYAML().dump_to_string(yml_dict)
     return YMLRuleRefactorResult(
         rule_name=rule_name,
         refactored=refactored,
-        refactored_yaml=DbtYAML().dump_to_string(yml_dict) if refactored else yml_str,
+        refactored_yaml=refactored_yaml,
         original_yaml=yml_str,
         deprecation_refactors=[DbtDeprecationRefactor(log=log, deprecation=deprecation) for log in logs],
     )
@@ -153,8 +202,10 @@ def changeset_1x_rename_predicates_yml(content: YMLContent, config: YMLRefactorC
     yml_str = content.current_str
     yml_dict = load_yaml(yml_str)
     logs: List[str] = []
-    _rename_keys(_config_mappings(yml_dict), _PREDICATES_RENAME, logs, _PREDICATES_LOG_FMT)
-    return _yml_result("migrate_1x_rename_predicates_yml", "IncrementalPredicatesRename", yml_str, yml_dict, logs)
+    edits = _rename_keys(_config_mappings(yml_dict), _PREDICATES_RENAME, logs, _PREDICATES_LOG_FMT)
+    return _yml_result(
+        "migrate_1x_rename_predicates_yml", "IncrementalPredicatesRename", yml_str, yml_dict, logs, edits
+    )
 
 
 def changeset_1x_rename_predicates_project(
@@ -164,8 +215,10 @@ def changeset_1x_rename_predicates_project(
     yml_str = content.current_str
     yml_dict = load_yaml(yml_str)
     logs: List[str] = []
-    _rename_keys(_walk_mappings(yml_dict.get("models")), _PREDICATES_RENAME_PROJECT, logs, _PREDICATES_LOG_FMT)
-    return _yml_result("migrate_1x_rename_predicates_project", "IncrementalPredicatesRename", yml_str, yml_dict, logs)
+    edits = _rename_keys(_walk_mappings(yml_dict.get("models")), _PREDICATES_RENAME_PROJECT, logs, _PREDICATES_LOG_FMT)
+    return _yml_result(
+        "migrate_1x_rename_predicates_project", "IncrementalPredicatesRename", yml_str, yml_dict, logs, edits
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -247,8 +300,8 @@ def changeset_1x_tests_to_data_tests_yml(content: YMLContent, config: YMLRefacto
     yml_str = content.current_str
     yml_dict = load_yaml(yml_str)
     logs: List[str] = []
-    _rename_keys(_walk_mappings(yml_dict), _TESTS_RENAME, logs)
-    return _yml_result("migrate_1x_tests_to_data_tests_yml", "TestsConfigDeprecation", yml_str, yml_dict, logs)
+    edits = _rename_keys(_walk_mappings(yml_dict), _TESTS_RENAME, logs)
+    return _yml_result("migrate_1x_tests_to_data_tests_yml", "TestsConfigDeprecation", yml_str, yml_dict, logs, edits)
 
 
 def changeset_1x_tests_to_data_tests_project(
@@ -258,7 +311,7 @@ def changeset_1x_tests_to_data_tests_project(
     yml_str = content.current_str
     yml_dict = load_yaml(yml_str)
     logs: List[str] = []
-    if "tests" in yml_dict and "data_tests" not in yml_dict:
-        _rename_key(yml_dict, "tests", "data_tests")
-        logs.append("Renamed top-level 'tests' config to 'data_tests'")
-    return _yml_result("migrate_1x_tests_to_data_tests_project", "TestsConfigDeprecation", yml_str, yml_dict, logs)
+    edits = _rename_keys([yml_dict], _TESTS_RENAME, logs, "Renamed top-level '{old}' config to '{new}'")
+    return _yml_result(
+        "migrate_1x_tests_to_data_tests_project", "TestsConfigDeprecation", yml_str, yml_dict, logs, edits
+    )
