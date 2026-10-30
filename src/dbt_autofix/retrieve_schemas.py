@@ -1,8 +1,11 @@
 import json
 import logging
 import os
+import tempfile
+import time
 from dataclasses import dataclass
-from typing import Any, Optional
+from pathlib import Path
+from typing import Any, Callable, Optional
 
 import httpx
 
@@ -34,14 +37,15 @@ class SchemaSpecs:
         self.transport = httpx.HTTPTransport(retries=3)
         self.client = httpx.Client(transport=self.transport, verify=not disable_ssl_verification)
 
+        # Resolve "latest" once, so every schema used in this run comes from the same version
+        self._schema_version = version or get_fusion_latest_version(self.client)
         self.yaml_specs_per_node_type, self.dbtproject_specs_per_node_type, self.valid_top_level_yaml_fields = (
-            self._get_specs(version)
+            self._get_specs(self._schema_version)
         )
         self.owner_properties = ["name", "email"]
         self.nodes_with_owner = ["groups", "exposures"]
         # Cache dict config analysis
         self._dict_config_cache = None
-        self._schema_version = version
 
     def _get_specs(
         self, version: Optional[str] = None
@@ -318,31 +322,103 @@ class SchemaSpecs:
         return self._dict_config_cache
 
 
+FUSION_CDN_URL = "https://public.cdn.getdbt.com/fs"
+CACHE_DIR_ENV_VAR = "DBT_AUTOFIX_CACHE_DIR"
+# versions.json moves when a new Fusion version is released; versioned schema files never change
+LATEST_VERSION_CACHE_TTL_SECONDS = 24 * 60 * 60
+
+
+def get_cache_dir() -> Optional[Path]:
+    """Directory where downloaded schemas are cached, or None when caching is disabled.
+
+    DBT_AUTOFIX_CACHE_DIR overrides the location and disables caching when set to an empty string.
+    Otherwise $XDG_CACHE_HOME/dbt-autofix, falling back to ~/.cache/dbt-autofix.
+    """
+    cache_dir = os.environ.get(CACHE_DIR_ENV_VAR)
+    if cache_dir is not None:
+        return Path(cache_dir) if cache_dir else None
+    return Path(os.environ.get("XDG_CACHE_HOME") or Path.home() / ".cache") / "dbt-autofix"
+
+
+def _write_cache_file(cache_file: Path, text: str) -> None:
+    """Write a cache file atomically; failing to write it is not an error.
+
+    Writing a temporary file and renaming it means concurrent runs (parallel pre-commit batches)
+    never read a partially written file.
+    """
+    tmp_name = None
+    try:
+        cache_file.parent.mkdir(parents=True, exist_ok=True)
+        fd, tmp_name = tempfile.mkstemp(dir=cache_file.parent, prefix=f".{cache_file.name}.")
+        with os.fdopen(fd, "w", encoding="utf-8") as tmp_file:
+            tmp_file.write(text)
+        os.replace(tmp_name, cache_file)
+    except OSError as e:
+        logging.info(f"Could not write schema cache {cache_file}: {e}")
+        if tmp_name is not None and os.path.exists(tmp_name):
+            os.remove(tmp_name)
+
+
+def _fetch_cached(
+    client: httpx.Client, url: str, parse: Callable[[str], Any], max_age_seconds: Optional[float] = None
+) -> Any:
+    """GET url and parse the body, reusing a cached copy that is fresh and parses.
+
+    When the download fails, a stale cached copy is used instead, so runs keep working offline.
+    """
+    cache_dir = get_cache_dir()
+    cache_file = cache_dir / url.rsplit("/", 1)[-1] if cache_dir else None
+
+    stale_text: Optional[str] = None
+    if cache_file is not None and cache_file.is_file():
+        try:
+            cached_text = cache_file.read_text(encoding="utf-8")
+            cached = parse(cached_text)
+        except (OSError, ValueError, KeyError):
+            pass  # unreadable or corrupt cache: download again
+        else:
+            age_seconds = time.time() - cache_file.stat().st_mtime
+            if max_age_seconds is None or age_seconds < max_age_seconds:
+                return cached
+            stale_text = cached_text
+
+    try:
+        logging.info(f"Downloading {url}")
+        response = client.get(url)
+        response.raise_for_status()
+    except httpx.HTTPError as e:
+        if stale_text is None:
+            raise
+        logging.warning(f"Could not download {url} ({e}); using the cached copy from {cache_file}")
+        return parse(stale_text)
+
+    result = parse(response.text)
+    if cache_file is not None:
+        _write_cache_file(cache_file, response.text)
+    return result
+
+
 def get_fusion_latest_version(client: httpx.Client) -> str:
-    latest_versions_url = "https://public.cdn.getdbt.com/fs/versions.json"
-    resp = client.get(latest_versions_url)
-    resp.raise_for_status()
-    return resp.json()["latest"]["tag"]
+    return _fetch_cached(
+        client,
+        f"{FUSION_CDN_URL}/versions.json",
+        lambda text: json.loads(text)["latest"]["tag"],
+        max_age_seconds=LATEST_VERSION_CACHE_TTL_SECONDS,
+    )
+
+
+def _parse_fusion_yml_schema(text: str) -> dict:
+    # for some reason we have 2 different schemas now in the response
+    return json.loads(text.split("----------------------------------------------")[-1])
 
 
 def get_fusion_yml_schema(client: httpx.Client, version: str) -> dict:
-    yml_schema_url = f"https://public.cdn.getdbt.com/fs/schemas/fs-schema-dbt-yaml-files-{version}.json"
-
-    logging.info(f"Getting fusion yml schema for version {version}: {yml_schema_url}")
-    response = client.get(yml_schema_url)
-    response.raise_for_status()
-
-    # for some reason we have 2 different schemas now in the response
-    response_split = response.text.split("----------------------------------------------")
-
-    return json.loads(response_split[-1])
+    logging.info(f"Getting fusion yml schema for version {version}")
+    return _fetch_cached(
+        client, f"{FUSION_CDN_URL}/schemas/fs-schema-dbt-yaml-files-{version}.json", _parse_fusion_yml_schema
+    )
 
 
 def get_fusion_dbt_project_schema(client: httpx.Client, version: str) -> dict:
-    dbt_project_schema_url = f"https://public.cdn.getdbt.com/fs/schemas/fs-schema-dbt-project-{version}.json"
-
-    logging.info(f"Getting fusion dbt project schema for version {version}: {dbt_project_schema_url}")
-    response = client.get(dbt_project_schema_url)
-    response.raise_for_status()
-
-    return response.json()
+    logging.info(f"Getting fusion dbt project schema for version {version}")
+    return _fetch_cached(client, f"{FUSION_CDN_URL}/schemas/fs-schema-dbt-project-{version}.json", json.loads)

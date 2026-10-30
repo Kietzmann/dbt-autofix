@@ -97,6 +97,8 @@ Each JSON object will have the following keys:
 - "file_path": the full path of the file modified. Each file will appear only once
 - "refactors": the list of refactoring rules applied
 
+The dbt v2 JSON schemas are downloaded from the dbt CDN and cached in `$XDG_CACHE_HOME/dbt-autofix` (`~/.cache/dbt-autofix` by default). Versioned schemas are cached permanently and the latest version is checked again after 24 hours, falling back to the cached copy when offline. Set `DBT_AUTOFIX_CACHE_DIR` to use another directory, or set it to an empty string to disable the cache.
+
 Calling `deprecations` without `--dry-run` should be safe if your dbt code is part of a git repo. 
 
 Please review the suggested changes to your dbt project before merging to `main` and make those changes go through your typical CI/CD process.
