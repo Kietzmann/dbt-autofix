@@ -4,6 +4,7 @@
   entry: python -m pre_commit_hooks.check_deprecations --dry-run
   language: python
   pass_filenames: true
+  types_or: [sql, yaml]
 
 - id: dbt-autofix-fix
   name: Fix dbt deprecations
@@ -11,3 +12,4 @@
   entry: python -m pre_commit_hooks.check_deprecations
   language: python
   pass_filenames: true
+  types_or: [sql, yaml]
