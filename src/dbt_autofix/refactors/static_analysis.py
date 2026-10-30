@@ -104,6 +104,15 @@ def changeset_normalize_static_analysis_yml(content: YMLContent, config: object)
     blocks) and schema YAML ``config:`` blocks (model/seed/snapshot/source levels).
     """
     yml_str = content.current_str
+    if STATIC_ANALYSIS_KEY not in yml_str:
+        # No static_analysis key (plain or +prefixed) means nothing to normalize; skip the parse
+        return YMLRuleRefactorResult(
+            rule_name="normalize_static_analysis",
+            refactored=False,
+            refactored_yaml=yml_str,
+            original_yaml=yml_str,
+            deprecation_refactors=[],
+        )
     yml_dict = load_yaml(yml_str)
 
     changes: List[Tuple[str, Any, str]] = []

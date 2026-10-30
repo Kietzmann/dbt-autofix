@@ -17,6 +17,21 @@ from dbt_autofix.retrieve_schemas import SchemaSpecs
 NUM_SPACES_TO_REPLACE_TAB = 2
 
 
+def _unchanged_result(rule_name: str, yml_str: str) -> YMLRuleRefactorResult:
+    """Result for a rule that cannot apply to this file, returned before parsing it.
+
+    Callers check for text that must be present for the rule to change anything (e.g. an `owner` key),
+    which is much cheaper than a ruamel parse of every file.
+    """
+    return YMLRuleRefactorResult(
+        rule_name=rule_name,
+        refactored=False,
+        refactored_yaml=yml_str,
+        original_yaml=yml_str,
+        deprecation_refactors=[],
+    )
+
+
 def changeset_replace_fancy_quotes(content: YMLContent, config: YMLRefactorConfig) -> YMLRuleRefactorResult:
     """Replace fancy quotes with appropriate handling based on context.
 
@@ -243,6 +258,9 @@ def changeset_owner_properties_yml_str(content: YMLContent, config: YMLRefactorC
     """
     yml_str = content.current_str
     schema_specs = config.schema_specs
+    # Only owner: blocks of top-level groups/exposures are restructured
+    if "owner" not in yml_str or not any(node_type in yml_str for node_type in schema_specs.nodes_with_owner):
+        return _unchanged_result("restructure_owner_properties", yml_str)
     refactored = False
     deprecation_refactors: List[DbtDeprecationRefactor] = []
     yml_dict = load_yaml(yml_str)
@@ -381,6 +399,8 @@ def changeset_remove_indentation_version(content: YMLContent, config: YMLRefacto
 def changeset_remove_extra_tabs(content: YMLContent, config: YMLRefactorConfig) -> YMLRuleRefactorResult:
     """Removes extra tabs in the YAML files"""
     yml_str = content.current_str
+    if "\t" not in yml_str:
+        return _unchanged_result("remove_extra_tabs", yml_str)
     refactored = False
     deprecation_refactors: List[DbtDeprecationRefactor] = []
     current_yaml = yml_str
@@ -1011,6 +1031,8 @@ def changeset_remove_duplicate_models(content: YMLContent, config: YMLRefactorCo
     last definition when duplicates exist.
     """
     yml_str = content.current_str
+    if "models" not in yml_str:
+        return _unchanged_result("remove_duplicate_models", yml_str)
     refactored = False
     deprecation_refactors: List[DbtDeprecationRefactor] = []
     yml_dict = load_yaml(yml_str)
